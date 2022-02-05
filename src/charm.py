@@ -20,6 +20,10 @@ class CheckRunnersEvent(EventBase):
 
 class GithubRunnerOperator(CharmBase):
     _stored = StoredState()
+    _virt_type_config_options = {
+        "container": "containers",
+        "virtual-machine": "virtual-machines",
+    }
 
     def __init__(self, *args):
         super().__init__(*args)
@@ -71,21 +75,24 @@ class GithubRunnerOperator(CharmBase):
         event.set_results({"status": "Completed runner check"})
 
     def _reconcile_runners(self):
-        delta = self.config["quantity"] - self._runner.active_count()
-        logger.info(f"Reconciling {delta} runners")
-        while delta > 0:
-            self.unit.status = MaintenanceStatus(f"Installing {delta} runner(s)")
-            try:
-                self._runner.create(image="ubuntu", virt=self.config["virt-type"])
-            except RuntimeError as e:
-                logger.error("Failed to create runner")
-                logger.error(f"Error: {e}")
-            delta = self.config["quantity"] - self._runner.active_count()
+        for virt_type in self._virt_type_config_options.keys():
+            target_quantity = self.config[self._virt_type_config_options[virt_type]]
+            delta = target_quantity - self._runner.active_count(virt_type)
+            logger.info(f"Reconciling {delta} runners")
+            while delta > 0:
+                self.unit.status = MaintenanceStatus(f"Installing {delta} runner(s)")
+                try:
+                    self._runner.create(virt_type, "ubuntu")
+                except RuntimeError as e:
+                    logger.error("Failed to create runner")
+                    logger.error(f"Error: {e}")
+                delta = target_quantity - self._runner.active_count(virt_type)
         self.unit.status = ActiveStatus("Active and registered")
 
     def _on_stop(self, event):
         self._remove_cron("check-runners")
-        self._runner.remove_runners()
+        for virt_type in self._virt_type_config_options.keys():
+            self._runner.remove_runners(virt_type)
 
     def _add_cron(self, event, interval):
         """Add a cron job for the provided event to run at the provided interval."""

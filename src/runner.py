@@ -22,6 +22,7 @@ logger = logging.getLogger(__name__)
 class Runner:
     release_url = "https://api.github.com/repos/actions/runner/releases/latest"
     runner_path = Path("/opt/github-runner")
+    runner_prefix = "runner-"
     env_file = runner_path / ".env"
 
     def __init__(self, path, token):
@@ -55,10 +56,10 @@ class Runner:
         cmd = "sudo lxd init --auto"
         subprocess.check_output(cmd.split())
 
-    def create(self, image, virt="container", wait=False):
+    def create(self, virt_type, image, wait=True):
         """Create a runner"""
-        instance = self._create_instance(image=image, virt=virt)
-        instance.start(wait=True)
+        instance = self._create_instance(virt_type, image, wait)
+        instance.start(wait)
         try:
             self._install_binary(instance)
             self._configure_runner(instance)
@@ -71,24 +72,22 @@ class Runner:
             self._start_runner(instance)
             self._load_aaprofile(instance)
         except RuntimeError as e:
-            instance.stop(wait=True)
+            instance.stop(wait=wait)
             raise e
 
-    def active_count(self):
+    def active_count(self, virt_type):
         """Return the number of active runners"""
-        count = 0
-        for container in self.lxd.containers.all():
-            if container.name.startswith("runner-"):
-                count += 1
-        return count
+        return len(self._get_instances(virt_type))
 
-    def remove_runners(self):
+    def remove_runners(self, virt_type):
         """Remove runners"""
         api = self.api
         repo = None
         if "/" in self.path:
             owner, repo = self.path.split("/")
-        hosted_runners = [container.name for container in self.lxd.containers.all()]
+        hosted_runners = [
+            container.name for container in self._get_instances(virt_type)
+        ]
         for runner in self._get_runners()["runners"]:
             if runner.name in hosted_runners:
                 logger.info(f"Deregistering runner {runner.name}")
@@ -100,6 +99,16 @@ class Runner:
                     api.actions.delete_self_hosted_runner_from_org(
                         org=self.path, runner_id=runner.id
                     )
+
+    def _get_instances(self, virt_type):
+        """Return runner instances of the given virtualization type"""
+        return list(
+            filter(
+                lambda container: container.type == virt_type
+                and container.name.startswith(self.runner_prefix),
+                self.lxd.containers.all(),
+            )
+        )
 
     def _get_runners(self):
         """Return the runner data"""
@@ -115,8 +124,8 @@ class Runner:
             runners = api.actions.list_self_hosted_runners_for_org(org=self.path)
         return runners
 
-    def _register_runner(self, container, labels):
-        """Register a runner in a container"""
+    def _register_runner(self, instance, labels):
+        """Register a runner in an instance"""
         api = self.api
         if "/" in self.path:
             owner, repo = self.path.split("/")
@@ -132,12 +141,12 @@ class Runner:
             f"{token.token} "
             "--ephemeral "
             "--name "
-            f"{container.name} "
+            f"{instance.name} "
             "--unattended "
             "--labels "
             f"{','.join(labels)}"
         )
-        self._check_output(container, cmd)
+        self._check_output(instance, cmd)
 
     def _start_runner(self, instance):
         """Start a runner that is already registered"""
@@ -225,7 +234,7 @@ class Runner:
             tmp_file.write(response.content)
         return runner_binary
 
-    def _create_instance(self, image="focal", virt="container"):
+    def _create_instance(self, virt_type, image, wait=True):
         """Create an instance"""
         suffix = "".join(choices(ascii_lowercase + digits, k=6))
         if not self.lxd.profiles.exists("runner"):
@@ -237,8 +246,8 @@ class Runner:
             devices = {}
             self.lxd.profiles.create("runner", config, devices)
         config = {
-            "name": f"runner-{suffix}",
-            "type": virt,
+            "name": f"{self.runner_prefix}{suffix}",
+            "type": virt_type,
             "source": {
                 "type": "image",
                 "mode": "pull",
@@ -249,4 +258,4 @@ class Runner:
             "ephemeral": True,
             "profiles": ["default", "runner"],
         }
-        return self.lxd.instances.create(config=config, wait=True)
+        return self.lxd.instances.create(config=config, wait=wait)

@@ -23,8 +23,10 @@ def mocks(monkeypatch):
     monkeypatch.setattr("runner.Runner._get_runner_binary", mock.MagicMock())
     monkeypatch.setattr("runner.Runner._load_aaprofile", mock.MagicMock())
 
-    def active_count(runner_class, values=[0, 1, 2, 3]):
-        return values.pop(0)
+    def active_count(
+        runner_class, virt_type, containers=[0, 1, 2, 3], virtual_machines=[0]
+    ):
+        return (containers if virt_type == "container" else virtual_machines).pop(0)
 
     monkeypatch.setattr("runner.Runner.active_count", active_count)
     monkeypatch.setattr("runner.time", mock.MagicMock())
